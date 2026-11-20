@@ -1,0 +1,244 @@
+# GitLab CI(.gitlab-ci.yml, .gitlab/ci/*.yml)의 빌드·테스트 잡을 옮긴 워크플로.
+# dev 서버 배포 잡과 nexa-security 레지스트리 publish 잡은 옮기지 않았다 (DOCS/github-actions.md 참고).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [develop]
+  workflow_dispatch: # 수동 실행 시 변경 여부와 상관없이 전부 돈다
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # paths-filter 가 PR 변경 파일 목록을 API 로 읽는다
+    outputs:
+      backend: ${{ steps.pick.outputs.backend }}
+      fastapi: ${{ steps.pick.outputs.fastapi }}
+      frontend: ${{ steps.pick.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: filter
+        if: github.event_name != 'workflow_dispatch'
+        uses: dorny/paths-filter@v3
+        with:
+          # nexa-security 는 includeBuild 로 소스를 직접 쓰므로, 바뀌면 사용하는 서비스도 다시 빌드한다
+          filters: |
+            nexa-security:
+              - 'Backend/nexa-security/**'
+              - '.github/workflows/ci.yml'
+            user-service:
+              - 'Backend/user-service/**'
+              - '.github/workflows/ci.yml'
+            approval-service:
+              - 'Backend/approval-service/**'
+              - 'Backend/nexa-security/**'
+              - '.github/workflows/ci.yml'
+            attendance-service:
+              - 'Backend/attendance-service/**'
+              - 'Backend/nexa-security/**'
+              - '.github/workflows/ci.yml'
+            leave-service:
+              - 'Backend/leave-service/**'
+              - 'Backend/nexa-security/**'
+              - '.github/workflows/ci.yml'
+            migration-service:
+              - 'Backend/migration-service/**'
+              - 'Backend/nexa-security/**'
+              - '.github/workflows/ci.yml'
+            payroll-service:
+              - 'Backend/payroll-service/**'
+              - 'Backend/nexa-security/**'
+              - '.github/workflows/ci.yml'
+            config-server:
+              - 'Backend/config-server/**'
+              - '.github/workflows/ci.yml'
+            eureka-server:
+              - 'Backend/eureka-server/**'
+              - '.github/workflows/ci.yml'
+            gateway-service:
+              - 'Backend/gateway-service/**'
+              - '.github/workflows/ci.yml'
+            fastapi:
+              - 'FastAPI/**'
+              - '.github/workflows/ci.yml'
+            frontend:
+              - 'Frontend/**'
+              - '.github/workflows/ci.yml'
+
+      - id: pick
+        env:
+          CHANGED: ${{ steps.filter.outputs.changes || '[]' }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          all='["nexa-security","user-service","approval-service","attendance-service","leave-service","migration-service","payroll-service","config-server","eureka-server","gateway-service"]'
+          if [ "$MANUAL" = "true" ]; then
+            backend="$all"
+            fastapi=true
+            frontend=true
+          else
+            backend="$(jq -c --argjson all "$all" '[.[] | select(. as $s | $all | index($s))]' <<<"$CHANGED")"
+            fastapi="$(jq 'index("fastapi") != null' <<<"$CHANGED")"
+            frontend="$(jq 'index("frontend") != null' <<<"$CHANGED")"
+          fi
+          echo "backend=$backend" >> "$GITHUB_OUTPUT"
+          echo "fastapi=$fastapi" >> "$GITHUB_OUTPUT"
+          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+          echo "backend=$backend fastapi=$fastapi frontend=$frontend"
+
+  backend:
+    needs: changes
+    if: needs.changes.outputs.backend != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.backend) }}
+    name: backend (${{ matrix.service }})
+    defaults:
+      run:
+        working-directory: Backend/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # 서비스별 테스트용 환경변수 (GitLab 잡의 variables 와 동일)
+      - name: Set service env
+        run: |
+          case "${{ matrix.service }}" in
+            user-service|approval-service)
+              echo "EUREKA_CLIENT_ENABLED=false" >> "$GITHUB_ENV" ;;
+            config-server)
+              echo "SPRING_PROFILES_ACTIVE=native" >> "$GITHUB_ENV"
+              echo "CONFIG_SERVER_PASSWORD=ci_test_password" >> "$GITHUB_ENV" ;;
+            eureka-server)
+              echo "EUREKA_USER=ci_eureka" >> "$GITHUB_ENV"
+              echo "EUREKA_PASSWORD=ci_test_password" >> "$GITHUB_ENV" ;;
+            gateway-service)
+              echo "SPRING_CONFIG_LOCATION=classpath:/gateway-ci.yml" >> "$GITHUB_ENV" ;;
+          esac
+
+      # Testcontainers 는 러너의 Docker 를 그대로 쓴다 (GitLab 의 dind 서비스 불필요)
+      - name: Build & test
+        run: |
+          case "${{ matrix.service }}" in
+            nexa-security)
+              bash gradlew --no-daemon test ;;
+            leave-service)
+              # GitLab CI 에서도 테스트를 생략하던 서비스
+              bash gradlew --no-daemon bootJar -x test ;;
+            *)
+              bash gradlew --no-daemon test bootJar ;;
+          esac
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ matrix.service }}
+          path: |
+            Backend/${{ matrix.service }}/build/reports/tests/
+            Backend/${{ matrix.service }}/build/test-results/
+          retention-days: 7
+
+  fastapi:
+    needs: changes
+    if: needs.changes.outputs.fastapi == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: nexa_ai_test
+          POSTGRES_USER: nexa_ai_test
+          POSTGRES_PASSWORD: ci_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexa_ai_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_HOST: localhost
+      DB_PORT: '5432'
+      DB_NAME: nexa_ai_test
+      DB_USER: nexa_ai_test
+      DB_PASSWORD: ci_test_password
+      EUREKA_SERVER_URL: ''
+      LLM_TEST_API_ENABLED: 'false'
+      UPLOAD_DIR: /tmp/nexa-ai-uploads
+    defaults:
+      run:
+        working-directory: FastAPI
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: FastAPI/requirements.txt
+
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pip check
+
+      - name: Startup, DB init & health check
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from fastapi.testclient import TestClient
+          from main import app
+
+          upload_dir = Path(os.environ["UPLOAD_DIR"])
+          upload_dir.mkdir(parents=True, exist_ok=True)
+          probe = upload_dir / "ci-write-check.txt"
+          probe.write_text("ok")
+          probe.unlink()
+
+          with TestClient(app) as client:
+              response = client.get("/health")
+              assert response.status_code == 200, response.text
+              assert response.json() == {"status": "ok"}, response.text
+
+          print("FastAPI startup, database initialization and health check passed")
+          PY
+
+  frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: Frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: Frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run build

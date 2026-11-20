@@ -18,6 +18,9 @@ permissions:
 jobs:
   changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # paths-filter 가 PR 변경 파일 목록을 API 로 읽는다
     outputs:
       backend: ${{ steps.pick.outputs.backend }}
       fastapi: ${{ steps.pick.outputs.fastapi }}

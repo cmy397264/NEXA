@@ -1,1 +1,4 @@
 rootProject.name = 'payroll-service'
+
+// 팀 공통 라이브러리(nexa-security)는 저장소 안의 소스를 직접 빌드해서 쓴다 (레지스트리·토큰 불필요)
+includeBuild '../nexa-security'

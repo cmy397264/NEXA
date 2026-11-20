@@ -44,6 +44,8 @@ services:
   approval-service:
     build:
       context: ./Backend/approval-service
+      additional_contexts:
+        nexa-security: ./Backend/nexa-security
     image: nexa-approval:local
 
     restart: unless-stopped
@@ -90,6 +92,8 @@ services:
   attendance-service:
     build:
       context: ./Backend/attendance-service
+      additional_contexts:
+        nexa-security: ./Backend/nexa-security
     image: nexa-attendance:local
 
     restart: unless-stopped
@@ -137,6 +141,8 @@ services:
   leave-service:
     build:
       context: ./Backend/leave-service
+      additional_contexts:
+        nexa-security: ./Backend/nexa-security
     image: nexa-leave:local
 
     restart: unless-stopped
@@ -216,6 +222,8 @@ services:
   migration-service:
     build:
       context: ./Backend/migration-service
+      additional_contexts:
+        nexa-security: ./Backend/nexa-security
     image: nexa-migration:local
 
     restart: unless-stopped
@@ -267,6 +275,8 @@ services:
   payroll-service:
     build:
       context: ./Backend/payroll-service
+      additional_contexts:
+        nexa-security: ./Backend/nexa-security
     image: nexa-payroll:local
     restart: unless-stopped
 

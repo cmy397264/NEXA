@@ -5,7 +5,7 @@
 
 - 소스: `Backend/nexa-security`
 - 좌표: `com.ssafy.nexa:nexa-security:1.1.0` (최신)
-- 저장소: 이 프로젝트의 GitLab Package Registry (익명 pull 허용, 토큰 불필요)
+- 받는 방법: 레지스트리 없이 각 서비스가 `includeBuild '../nexa-security'` 로 소스를 직접 빌드 (2026-11-20 GitHub 이전 때 변경, [github-actions.md](github-actions.md) 참고)
 - 적용 서비스: approval, attendance, leave, payroll (2026-11-02 기준 모두 `1.0.0` 사용 중 → 1.1.0 으로 올리기 필요)
 
 ## 버전 기록
@@ -55,15 +55,15 @@
 
 ## 적용 방법
 
-### 1. build.gradle
+### 1. settings.gradle / build.gradle / Dockerfile / compose
 
 ```groovy
-repositories {
-	mavenCentral()
-	// 팀 공통 라이브러리(nexa-security). 이 저장소의 GitLab Package Registry (익명 pull 허용)
-	maven { url = 'https://lab.ssafy.com/api/v4/projects/1457109/packages/maven' }
-}
+// settings.gradle — 저장소 안의 소스를 직접 빌드한다 (좌표 com.ssafy.nexa:nexa-security 가 자동으로 대체됨)
+includeBuild '../nexa-security'
+```
 
+```groovy
+// build.gradle — 별도 maven 저장소 불필요. 버전 번호는 includeBuild 로 대체되므로 표기용이다
 dependencies {
 	// spring-boot-starter-security, oauth2-resource-server 가 함께 들어온다
 	implementation 'com.ssafy.nexa:nexa-security:1.1.0'
@@ -71,6 +71,20 @@ dependencies {
 ```
 
 이미 `spring-boot-starter-oauth2-resource-server` 가 있다면 지운다 (라이브러리가 포함).
+
+Docker 빌드에서도 `../nexa-security` 가 보이도록, Dockerfile 빌드 단계와 `infra/compose/backend.yml` 에 아래를 넣는다.
+
+```dockerfile
+WORKDIR /app
+COPY --from=nexa-security . /nexa-security
+```
+
+```yaml
+    build:
+      context: ./Backend/<service>
+      additional_contexts:
+        nexa-security: ./Backend/nexa-security
+```
 
 ### 2. application.properties
 
@@ -372,20 +386,14 @@ mvc.perform(get("/api/v1/attn/admin/employees/7/daily/2026-10-30").with(admin(1)
 | gateway-service | WebFlux(리액티브)라 서블릿용 라이브러리를 쓸 수 없다. 쿠키 검증과 블랙리스트 검사를 직접 한다 |
 | user-service | 토큰 발급자. 자체 `JwtFilter` 로 블랙리스트까지 검사하며, 로그인/재발급/로그아웃 흐름이 달라 별도 검토 필요 |
 
-## 버전 올리기 (라이브러리 담당자)
+## 라이브러리 수정 (2026-11-20 이후)
 
-1. `Backend/nexa-security/build.gradle` 의 `version` 을 올린다 (호환이 깨지면 메이저, 기능 추가는 마이너, 수정은 패치).
-2. MR 머지 후 develop 에서 같은 번호로 태그를 push 한다.
-   ```bash
-   git tag -a nexa-security-v1.1.0 origin/develop -m "nexa-security 1.1.0"
-   git push origin nexa-security-v1.1.0
-   ```
-3. `publish-nexa-security` job 이 테스트 후 레지스트리에 올린다. 태그와 `version` 이 다르면 실패한다.
-4. 각 서비스는 `build.gradle` 의 버전을 직접 올려 적용한다 (올리기 전까지는 영향 없음).
+레지스트리 배포가 없어졌으므로 `Backend/nexa-security` 를 고치면 **사용하는 서비스 5개에 바로 반영된다.**
+GitHub Actions 는 nexa-security 가 바뀌면 nexa-security 테스트와 함께 approval·attendance·leave·migration·payroll 을 다시 빌드·테스트한다.
 
-- 이미 올라간 버전은 다시 올리지 않는다. 수정이 필요하면 새 버전을 낸다.
-- 배포 전 로컬에서 서비스와 함께 확인하려면 `--include-build` 로 소스를 끼워 빌드한다.
-  ```bash
-  cd Backend/approval-service
-  ./gradlew test --include-build ../nexa-security
-  ```
+- 호환이 깨지는 변경이면 같은 커밋에서 사용하는 서비스도 함께 고친다.
+- `build.gradle` 의 `version` 과 `nexa-security-v*` 태그는 변경 기록용으로만 쓴다.
+
+### 이전 방식 (GitLab, 2026-11-20 까지)
+
+태그 `nexa-security-v<버전>` push → GitLab `publish-nexa-security` job 이 `lab.ssafy.com` Package Registry 에 올리고, 각 서비스가 레지스트리에서 받았다. 1.0.0, 1.1.0 이 이 방식으로 배포됐다.

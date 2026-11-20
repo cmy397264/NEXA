@@ -2,6 +2,9 @@ FROM eclipse-temurin:21-jdk AS build
 
 WORKDIR /app
 
+# settings.gradle 의 includeBuild '../nexa-security' 용. compose 의 additional_contexts 로 전달된다
+COPY --from=nexa-security . /nexa-security
+
 COPY gradlew settings.gradle build.gradle ./
 COPY gradle ./gradle
 COPY src ./src
